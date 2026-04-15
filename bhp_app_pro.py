@@ -14,11 +14,11 @@ def load_data():
     # Wczytaj Checklistę
     df = pd.read_excel("wymagania_bhp.xlsx", sheet_name="Checklista", header=None)
     
-    # Znajdź pierwszy wiersz, który zawiera "lp." lub "Lp"
+    # Znajdź wiersz z nagłówkami
     header_row = None
     for idx, row in df.iterrows():
         first_cell = str(row[0]).lower().strip() if pd.notna(row[0]) else ""
-        if "lp" in first_cell or first_cell == "lp.":
+        if "lp" in first_cell:
             header_row = idx
             break
     
@@ -36,7 +36,7 @@ def load_data():
     rename_map = {}
     for col in df.columns:
         col_lower = col.lower()
-        if col_lower in ["lp", "l.p", "lp"]:
+        if col_lower in ["lp", "l.p"]:
             rename_map[col] = "Lp"
         elif col_lower == "obszar":
             rename_map[col] = "Obszar"
@@ -61,9 +61,9 @@ def load_data():
         nie_val = str(row.get("Nie", "")).lower().strip() if pd.notna(row.get("Nie")) else ""
         nd_val = str(row.get("Nie dotyczy", "")).lower().strip() if pd.notna(row.get("Nie dotyczy")) else ""
         
-        if tak_val in ["x", "tak", "1", "true", "yes"]:
+        if tak_val in ["x", "tak", "1"]:
             return "TAK"
-        if nie_val in ["x", "nie", "1", "false", "no"]:
+        if nie_val in ["x", "nie", "1"]:
             return "NIE"
         if nd_val in ["x", "n/d", "nd", "1"]:
             return "Nie dotyczy"
@@ -123,12 +123,12 @@ else:
 tylko_niezgodne = st.sidebar.toggle("🔴 Pokaż tylko niezgodne (NIE)")
 
 if wybrany_obszar != "Wszystkie":
-    df_filt = df[df["Obszar"] == wybrany_obszar]
+    df_filt = df[df["Obszar"] == wybrany_obszar].copy()
 else:
     df_filt = df.copy()
 
 if tylko_niezgodne:
-    df_filt = df_filt[df_filt["Ocena"] == "NIE"]
+    df_filt = df_filt[df_filt["Ocena"] == "NIE"].copy()
 
 # ==================== ZAKŁADKI ====================
 tab0, tab1, tab2, tab3 = st.tabs(["📄 Strona tytułowa", "📋 Checklista", "⚖️ Akty prawne", "📊 Raport"])
@@ -139,118 +139,100 @@ with tab0:
     
     col1, col2 = st.columns(2)
     with col1:
-        zaklad = st.text_input("🏭 **Zakład**", value="", placeholder="Wpisz nazwę zakładu pracy")
+        zaklad = st.text_input("🏭 **Zakład**", value="")
         data_audytu = st.date_input("📅 **Data**", value=datetime.now().date())
     with col2:
-        imie_nazwisko = st.text_input("👤 **Oceniający (imię i nazwisko)**", value="")
+        imie_nazwisko = st.text_input("👤 **Oceniający**", value="")
         stanowisko = st.text_input("📌 **Stanowisko**", value="")
 
 # ==================== TAB 1: CHECKLISTA ====================
 with tab1:
     st.header("📋 Ocena zgodności wymagań BHP")
     
-    ocenione = df_filt[df_filt["Ocena"] != ""].shape[0]
-    wszystkie = df_filt.shape[0]
-    if wszystkie > 0:
-        progress = ocenione / wszystkie
-        st.progress(progress, text=f"✅ Postęp: {int(progress*100)}% ({ocenione}/{wszystkie})")
+    # Przygotuj dane do edycji
+    df_edit = df_filt[["Lp", "Obszar", "Pytanie", "Podstawa prawna", "Ocena", "Obserwacje uwagi"]].copy()
     
-    st.markdown("---")
+    # Konfiguracja kolumn
+    column_config = {
+        "Ocena": st.column_config.SelectboxColumn(
+            "Ocena",
+            options=["", "TAK", "NIE", "Częściowo", "Nie dotyczy"],
+            required=False,
+        ),
+        "Obserwacje uwagi": st.column_config.TextColumn("Uwagi", width="medium"),
+        "Pytanie": st.column_config.TextColumn("Pytanie", width="large"),
+    }
     
-    for idx, row in df_filt.iterrows():
-        with st.container():
-            cols = st.columns([0.5, 1.5, 2.5, 2, 1, 1.5])
+    # Jeśli mamy listę aktów, dodajemy selectbox dla podstawy prawnej
+    if akty_lista:
+        column_config["Podstawa prawna"] = st.column_config.SelectboxColumn(
+            "Podstawa prawna",
+            options=[""] + akty_lista,
+            required=False,
+        )
+    
+    # Edytowalna tabela
+    edited_df = st.data_editor(
+        df_edit,
+        column_config=column_config,
+        hide_index=True,
+        use_container_width=True,
+        num_rows="dynamic"
+    )
+    
+    # Przycisk zapisu
+    if st.button("💾 Zapisz zmiany", use_container_width=True):
+        # Zaktualizuj oryginalne dane
+        for idx, row in edited_df.iterrows():
+            mask = df["Lp"] == row["Lp"]
+            df.loc[mask, "Ocena"] = row["Ocena"]
+            df.loc[mask, "Obserwacje uwagi"] = row["Obserwacje uwagi"]
+            df.loc[mask, "Podstawa prawna"] = row["Podstawa prawna"]
             
-            # Lp
-            lp_val = row.get("Lp", idx+1)
-            cols[0].markdown(f"**{lp_val}**")
-            
-            # Obszar
-            obszar_val = row.get("Obszar", "")
-            cols[1].write(str(obszar_val) if pd.notna(obszar_val) else "")
-            
-            # Pytanie
-            pytanie_val = row.get("Pytanie", "")
-            cols[2].write(str(pytanie_val) if pd.notna(pytanie_val) else "")
-            
-            # Podstawa prawna
-            current_value = row.get("Podstawa prawna", "")
-            if pd.isna(current_value):
-                current_value = ""
-            else:
-                current_value = str(current_value)
-            
-            if akty_lista:
-                options = [""] + akty_lista
-                current_index = 0
-                if current_value in akty_lista:
-                    current_index = akty_lista.index(current_value) + 1
-                
-                selected = cols[3].selectbox("Podstawa", options, index=current_index, key=f"akt_{idx}")
-                if selected != current_value:
-                    df.at[idx, "Podstawa prawna"] = selected
-                    save_checklist(df)
-                    st.rerun()
-                if selected and selected in akty_linki:
-                    cols[3].markdown(f"[🔗 Zobacz akt]({akty_linki[selected]})")
-            else:
-                cols[3].write(current_value)
-            
-            # Ocena
-            ocena_opcje = ["", "TAK", "NIE", "Częściowo", "Nie dotyczy"]
-            current_ocena = row.get("Ocena", "")
-            if pd.isna(current_ocena):
-                current_ocena = ""
-            ocena_idx = ocena_opcje.index(current_ocena) if current_ocena in ocena_opcje else 0
-            new_ocena = cols[4].selectbox("Ocena", ocena_opcje, index=ocena_idx, key=f"ocena_{idx}")
-            
-            if new_ocena != current_ocena:
-                df.at[idx, "Ocena"] = new_ocena
-                if "Tak" in df.columns:
-                    df.at[idx, "Tak"] = "x" if new_ocena == "TAK" else ""
-                if "Nie" in df.columns:
-                    df.at[idx, "Nie"] = "x" if new_ocena == "NIE" else ""
-                if "Nie dotyczy" in df.columns:
-                    df.at[idx, "Nie dotyczy"] = "n/d" if new_ocena == "Nie dotyczy" else ""
-                save_checklist(df)
-                st.rerun()
-            
-            # Komentarz - FIX: konwersja na string
-            current_kom = row.get("Obserwacje uwagi", "")
-            if pd.isna(current_kom):
-                current_kom = ""
-            else:
-                current_kom = str(current_kom)
-            
-            new_kom = cols[5].text_area("Uwagi", value=current_kom, key=f"kom_{idx}", height=60, label_visibility="collapsed")
-            if new_kom != current_kom:
-                df.at[idx, "Obserwacje uwagi"] = new_kom
-                save_checklist(df)
-                st.rerun()
+            # Aktualizuj kolumny Tak/Nie/Nie dotyczy
+            ocena = row["Ocena"]
+            if "Tak" in df.columns:
+                df.loc[mask, "Tak"] = "x" if ocena == "TAK" else ""
+            if "Nie" in df.columns:
+                df.loc[mask, "Nie"] = "x" if ocena == "NIE" else ""
+            if "Nie dotyczy" in df.columns:
+                df.loc[mask, "Nie dotyczy"] = "n/d" if ocena == "Nie dotyczy" else ""
         
-        st.divider()
-    
-    if st.button("💾 Zapisz wszystko", use_container_width=True):
         save_checklist(df)
         st.success("✅ Zapisano!")
+        st.rerun()
+    
+    # Wyświetl linki do aktów prawnych (jeśli istnieją)
+    if akty_linki:
+        st.markdown("---")
+        st.subheader("🔗 Dostępne linki do aktów prawnych")
+        for nazwa, link in akty_linki.items():
+            st.markdown(f"- **{nazwa}**: [Zobacz na ISAP]({link})")
 
 # ==================== TAB 2: AKTY PRAWNE ====================
 with tab2:
     st.header("⚖️ Akty prawne")
+    
     if df_akty is not None and not df_akty.empty:
         st.dataframe(df_akty, use_container_width=True)
         
-        # Dodaj możliwość dodania nowego aktu
+        # Dodawanie nowego aktu
         with st.expander("➕ Dodaj nowy akt prawny"):
-            nowy_akt = st.text_input("Nazwa aktu")
-            nowy_link = st.text_input("Link do ISAP")
+            col1, col2 = st.columns(2)
+            with col1:
+                nowy_akt = st.text_input("Nazwa aktu")
+            with col2:
+                nowy_link = st.text_input("Link do ISAP")
+            
             if st.button("Dodaj") and nowy_akt:
                 nowy_wiersz = pd.DataFrame({"Akt prawny": [nowy_akt], "Link": [nowy_link]})
                 df_akty_new = pd.concat([df_akty, nowy_wiersz], ignore_index=True)
                 with pd.ExcelWriter("wymagania_bhp.xlsx", engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
                     df_akty_new.to_excel(writer, sheet_name="Akty prawne", index=False)
-                st.success("Dodano! Odśwież stronę.")
+                st.success("✅ Dodano! Odśwież stronę.")
                 st.rerun()
+    else:
+        st.warning("Brak arkusza 'Akty prawne'")
 
 # ==================== TAB 3: RAPORT ====================
 with tab3:
@@ -259,6 +241,7 @@ with tab3:
     df_oceny = df[df["Ocena"] != ""].copy()
     niezgodne = df_oceny[df_oceny["Ocena"] == "NIE"].copy()
     
+    # Metryki
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.metric("Wszystkie wymagania", len(df_oceny))
@@ -271,12 +254,12 @@ with tab3:
         st.metric("Poziom zgodności", f"{zgodnosc:.1f}%")
     
     # Wykres
-    fig1, ax1 = plt.subplots()
+    fig, ax = plt.subplots()
     oceny_counts = df_oceny["Ocena"].value_counts()
     if not oceny_counts.empty:
-        ax1.pie(oceny_counts, labels=oceny_counts.index, autopct="%1.1f%%")
-        ax1.set_title("Ogólna zgodność")
-        st.pyplot(fig1)
+        ax.pie(oceny_counts, labels=oceny_counts.index, autopct="%1.1f%%")
+        ax.set_title("Ogólna zgodność")
+        st.pyplot(fig)
     
     # Lista niezgodności
     st.subheader("📋 Lista niezgodności")
