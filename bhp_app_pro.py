@@ -6,48 +6,72 @@ import tempfile
 import os
 import base64
 from datetime import datetime
-import shutil
-from PIL import Image
-import io
 
-st.set_page_config(page_title="BHP Professional - Ocena zgodności", layout="wide")
+st.set_page_config(page_title="BHP - Ocena zgodności", layout="wide")
 
-# ==================== KONFIGURACJA ====================
-if "zdjecia" not in st.session_state:
-    st.session_state.zdjecia = {}
-
+# ==================== WCZYTYWANIE DANYCH ====================
+@st.cache_data
 def load_data():
-    df = pd.read_excel("wymagania_bhp.xlsx", sheet_name="Checklista")
-    required_cols = ["Lp", "Obszar_BHP", "Wymaganie", "Podstawa_prawna", 
-                     "Sposób_weryfikacji", "Priorytet", "Ocena", "Komentarz", "Zdjęcie"]
-    for col in required_cols:
-        if col not in df.columns:
-            df[col] = "" if col != "Priorytet" else "Średni"
-    return df
+    xl = pd.ExcelFile("wymagania_bhp.xlsx")
+    sheet_names = xl.sheet_names
+    
+    # Strona tytułowa
+    df_tytul = None
+    if "Strona tytułowa" in sheet_names:
+        df_tytul = pd.read_excel(xl, sheet_name="Strona tytułowa")
+    
+    # Checklista
+    df_checklista = pd.read_excel(xl, sheet_name="Checklista")
+    df_checklista.columns = df_checklista.columns.str.strip()
+    
+    # Akty prawne - baza do wyboru
+    df_akty = None
+    if "Akty prawne" in sheet_names:
+        df_akty = pd.read_excel(xl, sheet_name="Akty prawne")
+        df_akty.columns = df_akty.columns.str.strip()
+    
+    return df_tytul, df_checklista, df_akty
 
-def save_data(df):
-    df.to_excel("wymagania_bhp.xlsx", sheet_name="Checklista", index=False)
+def save_checklist(df):
+    with pd.ExcelWriter("wymagania_bhp.xlsx", engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
+        df.to_excel(writer, sheet_name="Checklista", index=False)
 
-def color_row(ocena):
-    if ocena == "TAK":
-        return "background-color: #d4edda"
-    elif ocena == "NIE":
-        return "background-color: #f8d7da"
-    elif ocena == "Częściowo":
-        return "background-color: #fff3cd"
-    return ""
+df_tytul, df, df_akty = load_data()
 
-df = load_data()
+# ==================== PRZYGOTOWANIE LISTY AKTÓW PRAWNYCH ====================
+akty_lista = []  # lista nazw do wyboru
+akty_linki = {}  # słownik: nazwa -> link
+
+if df_akty is not None and not df_akty.empty:
+    # Zakładamy, że pierwsza kolumna to nazwa aktu (fragment)
+    pierwsza_kolumna = df_akty.columns[0]
+    akty_lista = df_akty[pierwsza_kolumna].dropna().astype(str).tolist()
+    
+    # Jeśli jest druga kolumna, potraktuj ją jako link
+    if len(df_akty.columns) > 1:
+        for _, row in df_akty.iterrows():
+            nazwa = str(row.iloc[0]) if pd.notna(row.iloc[0]) else ""
+            link = str(row.iloc[1]) if pd.notna(row.iloc[1]) else ""
+            if nazwa and link.startswith("http"):
+                akty_linki[nazwa] = link
+
+# Upewnij się, że kolumna podstawa prawna istnieje
+if "podstawa prawna" not in df.columns:
+    df["podstawa prawna"] = ""
 
 # ==================== SIDEBAR ====================
 st.sidebar.header("⚙️ Panel sterowania")
-obszary = ["Wszystkie"] + sorted(df["Obszar_BHP"].unique().tolist())
-wybrany_obszar = st.sidebar.selectbox("Obszar BHP", obszary)
 
-tylko_niezgodne = st.sidebar.toggle("🔴 Pokaż tylko niezgodne (NIE/Częściowo)")
+if "obszar" in df.columns and df["obszar"].notna().any():
+    obszary = ["Wszystkie"] + sorted(df["obszar"].dropna().unique().tolist())
+    wybrany_obszar = st.sidebar.selectbox("Obszar BHP", obszary)
+else:
+    wybrany_obszar = "Wszystkie"
+
+tylko_niezgodne = st.sidebar.toggle("🔴 Pokaż tylko niezgodne")
 
 if wybrany_obszar != "Wszystkie":
-    df_filt = df[df["Obszar_BHP"] == wybrany_obszar]
+    df_filt = df[df["obszar"] == wybrany_obszar]
 else:
     df_filt = df.copy()
 
@@ -55,7 +79,26 @@ if tylko_niezgodne:
     df_filt = df_filt[df_filt["Ocena"].isin(["NIE", "Częściowo"])]
 
 # ==================== ZAKŁADKI ====================
-tab1, tab2, tab3, tab4 = st.tabs(["📋 Checklista", "⚖️ Podstawy prawne", "📸 Dokumentacja", "📊 Raport"])
+tab0, tab1, tab2, tab3 = st.tabs(["📄 Strona tytułowa", "📋 Checklista", "⚖️ Baza aktów prawnych", "📊 Raport"])
+
+# ==================== TAB 0: STRONA TYTUŁOWA ====================
+with tab0:
+    st.header("📄 Informacje o audycie")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        data_audytu = st.date_input("📅 Data audytu", value=datetime.now().date())
+    with col2:
+        zaklad_pracy = st.text_input("🏭 Nazwa zakładu / lokalizacja", value="")
+    
+    col3, col4 = st.columns(2)
+    with col3:
+        audytor = st.text_input("👤 Imię i nazwisko audytora", value="")
+    with col4:
+        nr_audytu = st.text_input("🔢 Numer audytu", value="")
+    
+    st.text_area("📝 Dodatkowe uwagi / zakres audytu", height=100)
+    st.info("ℹ️ Dane zostaną użyte w raporcie PDF.")
 
 # ==================== TAB 1: CHECKLISTA ====================
 with tab1:
@@ -66,114 +109,138 @@ with tab1:
     wszystkie = df_filt.shape[0]
     if wszystkie > 0:
         progress = ocenione / wszystkie
-        st.progress(progress, text=f"✅ Postęp oceny: {int(progress*100)}% ({ocenione}/{wszystkie})")
+        st.progress(progress, text=f"✅ Postęp: {int(progress*100)}% ({ocenione}/{wszystkie})")
     
-    # Edytowalna tabela
-    edited_df = st.data_editor(
-        df_filt[["Lp", "Obszar_BHP", "Wymaganie", "Podstawa_prawna", 
-                 "Sposób_weryfikacji", "Priorytet", "Ocena", "Komentarz"]],
-        column_config={
-            "Ocena": st.column_config.SelectboxColumn(
-                "Ocena",
-                options=["", "TAK", "NIE", "Częściowo", "Nie dotyczy"],
-                required=False,
-            ),
-            "Priorytet": st.column_config.SelectboxColumn(
-                "Priorytet",
-                options=["Niski", "Średni", "Wysoki"],
-                required=True,
-            ),
-            "Komentarz": st.column_config.TextColumn("Komentarz"),
-            "Wymaganie": st.column_config.TextColumn("Wymaganie", width="large"),
-        },
-        hide_index=True,
-        use_container_width=True,
-    )
+    st.markdown("---")
     
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("💾 Zapisz oceny", use_container_width=True):
-            for idx, row in edited_df.iterrows():
-                mask = (df["Lp"] == row["Lp"]) & (df["Obszar_BHP"] == row["Obszar_BHP"])
-                df.loc[mask, "Ocena"] = row["Ocena"]
-                df.loc[mask, "Komentarz"] = row["Komentarz"]
-                df.loc[mask, "Priorytet"] = row["Priorytet"]
-            save_data(df)
-            st.success("✅ Zapisano! Wykresy i raport zaktualizują się automatycznie.")
-            st.rerun()
-    
-    with col2:
-        if st.button("🔄 Resetuj filtry", use_container_width=True):
-            st.session_state.clear()
-            st.rerun()
-
-# ==================== TAB 2: PODSTAWY PRAWNE ====================
-with tab2:
-    st.header("⚖️ Podstawy prawne z przypisanymi wymaganiami")
-    
-    akty = df[df["Podstawa_prawna"] != ""][["Podstawa_prawna", "Wymaganie", "Obszar_BHP", "Lp"]]
-    akty_grup = akty.groupby("Podstawa_prawna").agg({
-        "Wymaganie": list,
-        "Lp": list,
-        "Obszar_BHP": lambda x: list(set(x))
-    }).reset_index()
-    
-    for i, row in akty_grup.iterrows():
-        with st.expander(f"📜 {row['Podstawa_prawna']}"):
-            st.write(f"**Obszary:** {', '.join(row['Obszar_BHP'])}")
-            st.write("**Wymagania:**")
-            for req, lp in zip(row["Wymaganie"], row["Lp"]):
-                st.write(f"- LP {lp}: {req}")
+    # Wyświetl każde wymaganie w osobnym wierszu z selectboxem
+    for idx, row in df_filt.iterrows():
+        with st.container():
+            cols = st.columns([1, 2, 3, 2, 1.5, 2])
             
-            if st.button(f"🔍 Podświetl wymagania", key=f"akt_{i}"):
-                st.session_state.highlight_akt = row["Podstawa_prawna"]
-                st.success(f"Przejdź do zakładki 'Checklista' – podświetlono wymagania z {row['Podstawa_prawna']}")
+            # Lp
+            cols[0].markdown(f"**{row['Lp']}**")
+            
+            # Obszar
+            cols[1].write(row.get("obszar", ""))
+            
+            # Pytanie
+            cols[2].write(row.get("pytanie", ""))
+            
+            # --- Podstawa prawna - selectbox z listy ---
+            current_value = row.get("podstawa prawna", "")
+            if pd.isna(current_value):
+                current_value = ""
+            
+            # Selectbox do wyboru fragmentu aktu
+            options = [""] + akty_lista
+            current_index = 0
+            if current_value in akty_lista:
+                current_index = akty_lista.index(current_value) + 1
+            
+            selected_value = cols[3].selectbox(
+                "Podstawa prawna",
+                options=options,
+                index=current_index,
+                key=f"akt_{idx}_{row['Lp']}",
+                label_visibility="collapsed"
+            )
+            
+            # Jeśli zmieniono, zapisz
+            if selected_value != current_value:
+                df.at[idx, "podstawa prawna"] = selected_value
+                save_checklist(df)
+                st.rerun()
+            
+            # Jeśli wybrany akt ma link, wyświetl mały odnośnik
+            if selected_value and selected_value in akty_linki:
+                cols[3].markdown(f"[🔗 Zobacz na ISAP]({akty_linki[selected_value]})", unsafe_allow_html=True)
+            
+            # --- Ocena ---
+            ocena_options = ["", "TAK", "NIE", "Częściowo", "Nie dotyczy"]
+            current_ocena = row.get("Ocena", "")
+            if pd.isna(current_ocena):
+                current_ocena = ""
+            ocena_index = ocena_options.index(current_ocena) if current_ocena in ocena_options else 0
+            
+            new_ocena = cols[4].selectbox(
+                "Ocena",
+                options=ocena_options,
+                index=ocena_index,
+                key=f"ocena_{idx}_{row['Lp']}",
+                label_visibility="collapsed"
+            )
+            
+            if new_ocena != current_ocena:
+                df.at[idx, "Ocena"] = new_ocena
+                save_checklist(df)
+                st.rerun()
+            
+            # --- Komentarz ---
+            current_komentarz = row.get("Komentarz", "")
+            if pd.isna(current_komentarz):
+                current_komentarz = ""
+            
+            new_komentarz = cols[5].text_area(
+                "Uwagi",
+                value=current_komentarz,
+                key=f"komentarz_{idx}_{row['Lp']}",
+                label_visibility="collapsed",
+                height=60
+            )
+            
+            if new_komentarz != current_komentarz:
+                df.at[idx, "Komentarz"] = new_komentarz
+                save_checklist(df)
+                st.rerun()
+        
+        st.divider()
     
-    # Podświetlenie w checkliście
-    if "highlight_akt" in st.session_state:
-        with tab1:
-            st.info(f"🔆 Podświetlone wymagania dla: {st.session_state.highlight_akt}")
-            highlight_df = df_filt[df_filt["Podstawa_prawna"] == st.session_state.highlight_akt]
-            if not highlight_df.empty:
-                st.dataframe(highlight_df[["Lp", "Wymaganie", "Podstawa_prawna", "Ocena"]])
-            else:
-                st.warning("Brak wymagań dla tego aktu w obecnym filtrze")
+    # Przycisk zapisu (awaryjny)
+    if st.button("💾 Zapisz wszystkie zmiany", use_container_width=True):
+        save_checklist(df)
+        st.success("✅ Zapisano!")
+        st.rerun()
 
-# ==================== TAB 3: DOKUMENTACJA ZDJĘCIOWA ====================
-with tab3:
-    st.header("📸 Dokumentacja niezgodności")
+# ==================== TAB 2: BAZA AKTÓW PRAWNYCH ====================
+with tab2:
+    st.header("⚖️ Baza aktów prawnych")
     
-    # Wybór wymagania do zdjęcia
-    wymagania_list = df[df["Ocena"].isin(["NIE", "Częściowo"])][["Lp", "Wymaganie", "Obszar_BHP"]]
-    if not wymagania_list.empty:
-        wybor = st.selectbox(
-            "Wybierz wymaganie (NIE/Częściowo) – dodaj zdjęcie",
-            wymagania_list.apply(lambda x: f"{x['Lp']} - {x['Wymaganie'][:50]}", axis=1).tolist()
-        )
-        lp_wybrane = int(wybor.split(" - ")[0])
+    if df_akty is not None and not df_akty.empty:
+        st.subheader("📚 Dostępne akty prawne (fragmenty)")
+        st.dataframe(df_akty, use_container_width=True)
         
-        uploaded_file = st.file_uploader("Dodaj zdjęcie (JPG/PNG)", type=["jpg", "jpeg", "png"])
+        st.info("""
+        **Jak korzystać?**
+        1. W zakładce **Checklista** w kolumnie "Podstawa prawna" wybierz odpowiedni fragment z listy
+        2. Jeśli dodasz link w drugiej kolumnie – pojawi się odnośnik "🔗 Zobacz na ISAP"
         
-        if uploaded_file:
-            os.makedirs("zdjecia_bhp", exist_ok=True)
-            filename = f"zdjecia_bhp/lp_{lp_wybrane}_{uploaded_file.name}"
-            with open(filename, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            df.loc[df["Lp"] == lp_wybrane, "Zdjęcie"] = filename
-            save_data(df)
-            st.session_state.zdjecia[lp_wybrane] = filename
-            st.success(f"Zdjęcie dodane dla LP {lp_wybrane}")
-        
-        # Podgląd zdjęć
-        st.subheader("📷 Zapisane zdjęcia")
-        for _, row in df[df["Zdjęcie"] != ""].iterrows():
-            if os.path.exists(row["Zdjęcie"]):
-                st.image(row["Zdjęcie"], caption=f"LP {row['Lp']}: {row['Wymaganie'][:50]}", width=300)
+        **Aby dodać nowy fragment aktu prawnego:**
+        - Edytuj arkusz **`Akty prawne`** w pliku Excel
+        - W pierwszej kolumnie wpisz nazwę fragmentu (np. "Rozporządzenie UDT §3 pkt 5")
+        - W drugiej kolumnie opcjonalnie wklej link z ISAP
+        - Zapisz plik i prześlij na GitHub
+        """)
     else:
-        st.info("Brak niezgodności – nie ma potrzeby dodawania zdjęć")
+        st.warning("Nie znaleziono arkusza 'Akty prawne' w pliku Excel.")
+        with st.expander("❓ Jak dodać bazę aktów prawnych?"):
+            st.markdown("""
+            1. W pliku Excel utwórz nowy arkusz o nazwie **`Akty prawne`**
+            2. W pierwszej kolumnie wpisz **fragmenty aktów prawnych** (np. "Rozporządzenie UDT §3 pkt 5")
+            3. W drugiej kolumnie opcjonalnie wklej **link z ISAP**
+            4. Zapisz plik i prześlij ponownie na GitHub
+            
+            **Przykład:**
+            
+            | A | B |
+            |---|---|
+            | Rozporządzenie UDT §3 pkt 5 | https://isap.sejm.gov.pl/... |
+            | Rozporządzenie hałasowe §2 | https://isap.sejm.gov.pl/... |
+            | PN-EN 12464-1 pkt 4.2 | |
+            """)
 
-# ==================== TAB 4: RAPORT ====================
-with tab4:
+# ==================== TAB 3: RAPORT ====================
+with tab3:
     st.header("📊 Raport zgodności BHP")
     
     df_oceny = df[df["Ocena"] != ""].copy()
@@ -186,7 +253,7 @@ with tab4:
     with col2:
         st.metric("Zgodne (TAK)", len(df_oceny[df_oceny["Ocena"] == "TAK"]))
     with col3:
-        st.metric("Niezgodności", len(niezgodne), delta="do poprawy")
+        st.metric("Niezgodności", len(niezgodne))
     with col4:
         zgodnosc_proc = (len(df_oceny[df_oceny["Ocena"] == "TAK"]) / len(df_oceny)) * 100 if len(df_oceny) > 0 else 0
         st.metric("Poziom zgodności", f"{zgodnosc_proc:.1f}%")
@@ -196,14 +263,15 @@ with tab4:
     with col_a:
         fig1, ax1 = plt.subplots()
         oceny_counts = df_oceny["Ocena"].value_counts()
-        ax1.pie(oceny_counts, labels=oceny_counts.index, autopct="%1.1f%%", colors=["#28a745", "#dc3545", "#ffc107", "#6c757d"])
-        ax1.set_title("Ogólna zgodność")
-        st.pyplot(fig1)
+        if not oceny_counts.empty:
+            ax1.pie(oceny_counts, labels=oceny_counts.index, autopct="%1.1f%%")
+            ax1.set_title("Ogólna zgodność")
+            st.pyplot(fig1)
     
     with col_b:
-        fig2, ax2 = plt.subplots(figsize=(10, 5))
-        niezgodne_obszary = niezgodne.groupby("Obszar_BHP").size()
-        if not niezgodne_obszary.empty:
+        if "obszar" in niezgodne.columns and not niezgodne.empty:
+            fig2, ax2 = plt.subplots(figsize=(10, 5))
+            niezgodne_obszary = niezgodne.groupby("obszar").size()
             niezgodne_obszary.sort_values(ascending=False).plot(kind="bar", ax=ax2, color="#dc3545")
             ax2.set_xlabel("Obszar BHP")
             ax2.set_ylabel("Liczba niezgodności")
@@ -211,89 +279,69 @@ with tab4:
             ax2.set_title("Niezgodności wg obszarów")
             st.pyplot(fig2)
         else:
-            st.success("✅ Brak niezgodności – wszystko zgodne!")
+            st.success("✅ Brak niezgodności")
     
-    # Priorytety niezgodności
-    st.subheader("⚠️ Niezgodności według priorytetu")
+    # Lista niezgodności
+    st.subheader("📋 Lista niezgodności")
     if not niezgodne.empty:
-        prio_counts = niezgodne["Priorytet"].value_counts()
-        st.bar_chart(prio_counts)
+        kolumny_raport = ["Lp", "pytanie", "podstawa prawna", "Komentarz"]
+        if "obszar" in niezgodne.columns:
+            kolumny_raport.insert(1, "obszar")
+        st.dataframe(niezgodne[kolumny_raport], use_container_width=True)
         
-        st.subheader("📋 Lista niezgodności (z priorytetami)")
-        st.dataframe(
-            niezgodne[["Lp", "Obszar_BHP", "Wymaganie", "Podstawa_prawna", "Priorytet", "Komentarz"]],
-            use_container_width=True
-        )
-        
-        # Automatyczne wnioski
-        st.subheader("🧠 Automatyczne wnioski")
-        najgorszy_obszar = niezgodne["Obszar_BHP"].value_counts().index[0] if not niezgodne.empty else "brak"
-        wysokie_prio = niezgodne[niezgodne["Priorytet"] == "Wysoki"].shape[0]
-        
-        st.info(f"""
-        **Podsumowanie audytu BHP**  
-        - Łączna liczba niezgodności: **{len(niezgodne)}**  
-        - Obszar wymagający pilnej interwencji: **{najgorszy_obszar}**  
-        - Liczba niezgodności o wysokim priorytecie: **{wysokie_prio}**  
-        - Zalecane działania: natychmiastowa korekta w obszarach wysokiego priorytetu, aktualizacja dokumentacji, szkolenia BHP.
-        """)
+        st.subheader("🧠 Wnioski")
+        if "obszar" in niezgodne.columns and not niezgodne.empty:
+            najgorszy_obszar = niezgodne["obszar"].value_counts().index[0]
+            st.info(f"""
+            **Podsumowanie audytu BHP**  
+            - Liczba niezgodności: **{len(niezgodne)}**  
+            - Obszar wymagający interwencji: **{najgorszy_obszar}**  
+            """)
     else:
-        st.success("🎉 Brak niezgodności – pełna zgodność z wymaganiami BHP!")
+        st.success("🎉 Brak niezgodności – pełna zgodność!")
     
-    # Generowanie PDF
-    if st.button("📄 Generuj profesjonalny raport PDF", use_container_width=True):
+    # PDF
+    if st.button("📄 Generuj raport PDF", use_container_width=True):
         pdf = FPDF()
         pdf.add_page()
-        
-        # Logo (opcjonalnie – wstaw plik logo.png w folderze)
-        if os.path.exists("logo.png"):
-            pdf.image("logo.png", x=10, y=8, w=30)
-        
         pdf.set_font("Arial", "B", 16)
         pdf.cell(200, 10, txt="Raport oceny zgodności BHP", ln=1, align="C")
         pdf.set_font("Arial", size=10)
-        pdf.cell(200, 10, txt=f"Data generowania: {datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=1, align="C")
+        pdf.cell(200, 10, txt=f"Data: {datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=1, align="C")
         pdf.ln(10)
         
-        # Statystyki
         pdf.set_font("Arial", "B", 12)
-        pdf.cell(200, 10, txt="Podsumowanie statystyczne", ln=1)
+        pdf.cell(200, 10, txt="Podsumowanie", ln=1)
         pdf.set_font("Arial", size=10)
         pdf.cell(200, 8, txt=f"Liczba wymagań: {len(df_oceny)}", ln=1)
-        pdf.cell(200, 8, txt=f"Zgodnych (TAK): {len(df_oceny[df_oceny['Ocena']=='TAK'])}", ln=1)
-        pdf.cell(200, 8, txt=f"Niezgodności (NIE/Częściowo): {len(niezgodne)}", ln=1)
-        pdf.cell(200, 8, txt=f"Poziom zgodności: {zgodnosc_proc:.1f}%", ln=1)
-        pdf.ln(5)
+        pdf.cell(200, 8, txt=f"Zgodnych: {len(df_oceny[df_oceny['Ocena']=='TAK'])}", ln=1)
+        pdf.cell(200, 8, txt=f"Niezgodności: {len(niezgodne)}", ln=1)
         
-        # Tabela niezgodności z priorytetami
         if not niezgodne.empty:
+            pdf.ln(5)
             pdf.set_font("Arial", "B", 12)
             pdf.cell(200, 10, txt="Wykaz niezgodności", ln=1)
             pdf.set_font("Arial", "B", 9)
             pdf.cell(20, 8, "LP", 1)
-            pdf.cell(40, 8, "Obszar", 1)
-            pdf.cell(60, 8, "Wymaganie", 1)
-            pdf.cell(40, 8, "Podstawa prawna", 1)
-            pdf.cell(30, 8, "Priorytet", 1)
+            pdf.cell(80, 8, "Wymaganie", 1)
+            pdf.cell(90, 8, "Podstawa prawna", 1)
             pdf.ln()
             pdf.set_font("Arial", size=8)
             for _, row in niezgodne.iterrows():
                 pdf.cell(20, 6, str(row["Lp"]), 1)
-                pdf.cell(40, 6, row["Obszar_BHP"][:20], 1)
-                pdf.cell(60, 6, row["Wymaganie"][:35], 1)
-                pdf.cell(40, 6, row["Podstawa_prawna"][:25], 1)
-                pdf.cell(30, 6, row["Priorytet"], 1)
+                pytanie = row.get("pytanie", "")[:40] if pd.notna(row.get("pytanie")) else ""
+                pdf.cell(80, 6, pytanie, 1)
+                podstawa = row.get("podstawa prawna", "")[:50] if pd.notna(row.get("podstawa prawna")) else ""
+                pdf.cell(90, 6, podstawa, 1)
                 pdf.ln()
         
-        # Zapis PDF
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
             pdf.output(tmp.name)
             with open(tmp.name, "rb") as f:
                 b64 = base64.b64encode(f.read()).decode()
-            href = f'<a href="data:application/octet-stream;base64,{b64}" download="raport_bhp_{datetime.now().strftime("%Y%m%d")}.pdf">📥 Kliknij, aby pobrać raport PDF</a>'
+            href = f'<a href="data:application/octet-stream;base64,{b64}" download="raport_bhp_{datetime.now().strftime("%Y%m%d")}.pdf">📥 Pobierz PDF</a>'
             st.markdown(href, unsafe_allow_html=True)
             st.success("✅ Raport wygenerowany!")
 
-# ==================== STOPKA ====================
 st.sidebar.markdown("---")
-st.sidebar.caption(f"© BHP Audyt Pro | Liczba wymagań: {len(df)} | Oceniono: {df[df['Ocena']!=''].shape[0]}")
+st.sidebar.caption(f"© BHP Audyt | {len(df)} wymagań | Oceniono: {df[df['Ocena']!=''].shape[0]}")
